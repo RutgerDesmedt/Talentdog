@@ -17,5 +17,5 @@ RUN mkdir -p /home/claude/talentdog/database
 # EXPOSE poort die FastAPI gebruikt
 EXPOSE 8000
 
-# Start FastAPI via uvicorn (dit is cruciaal)
+# Start FastAPI via uvicorn op de juiste poort
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
