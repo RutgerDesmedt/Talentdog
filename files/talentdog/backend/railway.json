@@ -4,8 +4,8 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "port": 8000,
     "healthcheckPath": "/",
-    "region": "ams"
+    "healthcheckTimeout": 100,
+    "restartPolicyType": "on_failure"
   }
 }
