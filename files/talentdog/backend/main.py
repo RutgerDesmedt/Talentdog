@@ -50,6 +50,74 @@ async def startup_event():
 async def root():
     return {"status": "TalentDog Engine is Online", "port_active": os.environ.get("PORT", "8080")}
 
+@app.get("/api/vacancies")
+async def get_vacancies():
+    """Get all vacancies"""
+    # Mock data voor nu - later kun je dit uit een database halen
+    return [
+        {
+            "id": 1,
+            "title": "Senior Software Engineer",
+            "company": "ASML",
+            "location": "Eindhoven, NL",
+            "department": "Engineering",
+            "type": "Full-time",
+            "status": "Open"
+        },
+        {
+            "id": 2,
+            "title": "Product Manager",
+            "company": "Adyen",
+            "location": "Amsterdam, NL",
+            "department": "Product",
+            "type": "Full-time",
+            "status": "Open"
+        },
+        {
+            "id": 3,
+            "title": "Data Scientist",
+            "company": "Booking.com",
+            "location": "Amsterdam, NL",
+            "department": "Data & Analytics",
+            "type": "Full-time",
+            "status": "Open"
+        }
+    ]
+
+@app.get("/api/talent-pool")
+async def get_talent_pool(limit: int = 100):
+    """Get talent pool with optional limit"""
+    # Mock talent pool data
+    first_names = ['Emma', 'Liam', 'Sophie', 'Noah', 'Lisa', 'Lucas', 'Anna', 'Max', 'Julia', 'Tom']
+    last_names = ['de Vries', 'Jansen', 'Bakker', 'Visser', 'Smit', 'Meijer', 'de Boer', 'Mulder']
+    roles = ['Senior DevOps Engineer', 'Product Lead', 'Data Scientist', 'Cloud Architect']
+    companies = ['ASML', 'Adyen', 'Picnic', 'Bunq', 'Booking.com', 'Philips', 'Shell']
+    cities = ['Amsterdam', 'Rotterdam', 'Utrecht', 'Eindhoven', 'Den Haag']
+    sectors = ['Technology', 'FinTech', 'E-commerce', 'Healthcare Tech']
+    signal_types = ['TENURE EXPIRY', 'CORPORATE SHOCKWAVE', 'LAYOFFS', 'M&A / FUNDING']
+    
+    profiles = []
+    for i in range(min(limit, 100)):
+        name = f"{first_names[i % len(first_names)]} {last_names[i % len(last_names)]}"
+        profiles.append({
+            "id": i + 1,
+            "rank": f"#{i + 1}",
+            "name": name,
+            "role": roles[i % len(roles)],
+            "currentCompany": companies[i % len(companies)],
+            "location": f"{cities[i % len(cities)]}, NL",
+            "sector": sectors[i % len(sectors)],
+            "points": 50 + (i % 50),
+            "photo": f"https://images.pexels.com/photos/{220453 + (i % 10)}/pexels-photo.jpeg?auto=compress&cs=tinysrgb&w=150&h=150&fit=crop",
+            "signalType": signal_types[i % len(signal_types)],
+            "signalDescription": f"{name} heeft belangrijke ontwikkelingen.",
+            "story": f"{name} is klaar voor een nieuwe uitdaging.",
+            "background": f"Ervaren {roles[i % len(roles)]}.",
+            "email": f"{name.lower().replace(' ', '.')}@example.com"
+        })
+    
+    return profiles
+
 @app.get("/api/detect-signals/{company}")
 async def get_smart_signals(company: str):
     if not SERPER_API_KEY: 
