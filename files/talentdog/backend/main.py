@@ -7,6 +7,11 @@ import requests
 from datetime import datetime, timedelta
 import uvicorn
 
+# Pydantic models
+class VacancySync(BaseModel):
+    url: str
+    title: str = "Vacancy from URL Sync"
+
 app = FastAPI(title="TalentDog Intelligence v2.2")
 
 # CORS toestaan voor je frontend
@@ -38,6 +43,16 @@ def init_database():
     cursor = conn.cursor()
     cursor.execute('CREATE TABLE IF NOT EXISTS cached_signals (company TEXT, type TEXT, data TEXT, timestamp TIMESTAMP)')
     cursor.execute('CREATE TABLE IF NOT EXISTS signal_scheduler (company TEXT, type TEXT, next_check TIMESTAMP, PRIMARY KEY(company, type))')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS vacancies 
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                      title TEXT, 
+                      company TEXT,
+                      location TEXT, 
+                      department TEXT,
+                      type TEXT,
+                      status TEXT,
+                      url TEXT,
+                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     conn.commit()
     conn.close()
 
@@ -52,9 +67,8 @@ async def root():
 
 @app.get("/api/vacancies")
 async def get_vacancies():
-    """Get all vacancies"""
-    # Mock data voor nu - later kun je dit uit een database halen
-    return [
+    """Get all vacancies from database and mock data"""
+    mock_vacancies = [
         {
             "id": 1,
             "title": "Senior Software Engineer",
@@ -83,6 +97,33 @@ async def get_vacancies():
             "status": "Open"
         }
     ]
+    
+    # Haal ook vacancies uit de database
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('SELECT id, title, company, location, department, type, status, url FROM vacancies')
+        db_vacancies = cursor.fetchall()
+        conn.close()
+        
+        # Voeg database vacancies toe aan de lijst
+        for row in db_vacancies:
+            mock_vacancies.append({
+                "id": row[0],
+                "title": row[1],
+                "company": row[2] or "Your Company",
+                "location": row[3] or "Remote",
+                "department": row[4] or "General",
+                "type": row[5] or "Full-time",
+                "status": row[6] or "Open",
+                "url": row[7] if len(row) > 7 else None
+            })
+    except Exception as e:
+        print(f"Database error: {e}")
+        # Als database fout heeft, return alleen mock data
+        pass
+    
+    return mock_vacancies
 
 @app.get("/api/talent-pool")
 async def get_talent_pool(limit: int = 100):
@@ -117,6 +158,33 @@ async def get_talent_pool(limit: int = 100):
         })
     
     return profiles
+
+@app.post("/api/vacancies/sync")
+async def sync_vacancies(data: VacancySync):
+    """Sync vacancies from URL or ATS"""
+    try:
+        # In een echte implementatie zou je hier de URL scrapen of ATS API aanroepen
+        # Voor nu maken we een mock vacancy aan
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Voorbeeld: Een vacancy toevoegen gebaseerd op de URL
+        cursor.execute('''INSERT INTO vacancies (title, company, location, department, type, status, url)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                      (data.title, "Your Company", "Remote", "General", "Full-time", "Open", data.url))
+        
+        conn.commit()
+        vacancy_id = cursor.lastrowid
+        conn.close()
+        
+        return {
+            "success": True,
+            "message": "Vacancies synchronized successfully",
+            "vacancy_id": vacancy_id,
+            "url": data.url
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to sync vacancies: {str(e)}")
 
 @app.get("/api/detect-signals/{company}")
 async def get_smart_signals(company: str):
