@@ -15,7 +15,7 @@ class VacancySync(BaseModel):
     url: str
     title: str = "Nieuwe URL Sync"
 
-app = FastAPI(title="TalentDog Intelligence v2.5")
+app = FastAPI(title="TalentDog Intelligence v2.6")
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,7 +26,6 @@ app.add_middleware(
 
 DB_DIR = os.path.join(os.getcwd(), "database")
 DB_PATH = os.path.join(DB_DIR, "talentdog.db")
-SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 
 # --- DATABASE INITIALISATIE ---
 def init_database():
@@ -34,7 +33,11 @@ def init_database():
         os.makedirs(DB_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('CREATE TABLE IF NOT EXISTS vacancies (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, company TEXT, location TEXT, requirements TEXT, status TEXT, url TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS vacancies 
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                      title TEXT, company TEXT, location TEXT, 
+                      requirements TEXT, status TEXT, url TEXT, 
+                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     conn.commit()
     conn.close()
 
@@ -42,18 +45,43 @@ def init_database():
 async def startup_event():
     init_database()
 
-# --- HELPER FUNCTIES VOOR SCHONERE DATA ---
+# --- INTELLIGENTE FILTERS ---
+def is_genuine_job_title(title):
+    """Controleert of de tekst echt een functie is en geen menu-item of knop."""
+    title_clean = title.lower()
+    
+    # Woorden die MOETEN voorkomen voor een positieve match
+    job_markers = [
+        'engineer', 'developer', 'manager', 'consultant', 'medewerker', 
+        'specialist', 'analyst', 'lead', 'architect', 'expert', 'adviseur',
+        'monteur', 'operator', 'verpleegkundige', 'steward', 'designer',
+        'beheerder', 'coördinator', 'sales', 'account', 'technieker', 'it', 'ict'
+    ]
+    
+    # Woorden die we NOOIT als titel willen (de 'Klik hier' ruis)
+    blacklist = [
+        'klik hier', 'solliciteer', 'spontaan', 'onze vacatures', 
+        'over ons', 'privacy', 'cookie', 'lees meer', 'nieuws', 'blog',
+        'bekijk', 'ga naar', 'login', 'register'
+    ]
+    
+    if any(word in title_clean for word in blacklist):
+        return False
+        
+    # Moet een marker bevatten EN een redelijke lengte hebben
+    return any(marker in title_clean for marker in job_markers) and len(title) > 5
+
 def clean_job_title(title):
-    """Maakt de titels schoon (bijv. verwijdert 'Bekijk vacature')"""
-    noise = [r'bekijk vacature', r'solliciteer direct', r'view job', r'lees meer', r'details', r'apply now']
-    clean_title = title
+    """Schoont de titel op van resterende ruis."""
+    noise = [r'bekijk vacature', r'solliciteer direct', r'view job', r'lees meer']
+    clean = title
     for word in noise:
-        clean_title = re.sub(word, '', clean_title, flags=re.IGNORECASE)
-    clean_title = re.sub(r'^[ \t\n\r\f\v\W]+|[ \t\n\r\f\v\W]+$', '', clean_title)
-    return " ".join(clean_title.split())
+        clean = re.sub(word, '', clean, flags=re.IGNORECASE)
+    clean = re.sub(r'^[ \t\n\r\f\v\W]+|[ \t\n\r\f\v\W]+$', '', clean)
+    return " ".join(clean.split())
 
 def extract_requirements(html_content):
-    """Scant de tekst op keywords voor matching"""
+    """Scant de pagina op technische keywords."""
     soup = BeautifulSoup(html_content, 'html.parser')
     text = soup.get_text(" ", strip=True).lower()
     skill_library = ['python', 'react', 'javascript', 'aws', 'azure', 'php', 'java', 'management', 'sales', 'hbo', 'wo', 'nederlands', 'engels']
@@ -61,20 +89,15 @@ def extract_requirements(html_content):
     return ", ".join(found)
 
 def calculate_match_score(vacancy_title, vacancy_reqs, talent):
-    """Berekent hoe goed een talent past bij een vacature"""
+    """Matching logica tussen vacature en talent pool."""
     score = 0
     talent_data = (talent['role'] + " " + talent['background']).lower()
-    
-    # Match op titel (zwaar gewogen)
     if vacancy_title.lower() in talent['role'].lower():
         score += 50
-    
-    # Match op skills/requirements
     req_list = vacancy_reqs.lower().split(", ")
     for req in req_list:
         if req and req in talent_data:
             score += 20
-            
     return score
 
 # --- API ENDPOINTS ---
@@ -84,18 +107,17 @@ async def root():
     return {"status": "TalentDog Engine Online", "port": os.environ.get("PORT", "8080")}
 
 @app.get("/api/talent-pool")
-async def get_talent_pool(limit: int = 20):
-    """Mock talent pool data (in een echte app komt dit uit je DB)"""
+async def get_talent_pool(limit: int = 100):
     talents = [
         {"id": 1, "name": "Emma de Vries", "role": "Senior Python Developer", "background": "Ervaren met AWS en Python", "signalType": "TENURE EXPIRY"},
-        {"id": 2, "name": "Lucas Bakker", "role": "Project Manager", "background": "HBO werk- en denkniveau, Agile ervaring", "signalType": "LAYOFFS"},
+        {"id": 2, "name": "Lucas Bakker", "role": "Project Manager IT", "background": "HBO werk- en denkniveau, Agile ervaring", "signalType": "LAYOFFS"},
         {"id": 3, "name": "Sophie Jansen", "role": "Frontend Developer", "background": "Expert in React en Javascript", "signalType": None}
     ]
     return talents[:limit]
 
 @app.post("/api/vacancies/sync")
 async def sync_vacancies(data: VacancySync):
-    """Bezoekt de URL, vindt vacatures en slaat ze op met requirements"""
+    """Scraper met strenge functie-validatie."""
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(data.url, headers=headers, timeout=10)
@@ -104,11 +126,17 @@ async def sync_vacancies(data: VacancySync):
         found_count = 0
         for link in soup.find_all('a', href=True):
             href = link['href']
-            raw_text = link.get_text().strip()
+            # Zoek tekst in de link, of in een koptekst (h1-h4) binnen de link
+            inner_header = link.find(['h1', 'h2', 'h3', 'h4'])
+            raw_text = inner_header.get_text().strip() if inner_header else link.get_text().strip()
             
-            # Filter op links die op vacatures lijken
-            if len(raw_text) > 8 and any(k in href.lower() for k in ['job', 'vacature', 'vacancy', '/p/']):
+            # STRENG FILTER: Alleen als het op een echte baan lijkt
+            if is_genuine_job_title(raw_text) and any(k in href.lower() for k in ['job', 'vacature', 'vacancy', '/p/']):
                 full_url = urllib.parse.urljoin(data.url, href)
+                
+                # Check op PDF
+                if full_url.lower().endswith('.pdf'): continue
+
                 clean_title = clean_job_title(raw_text)
                 
                 # Deep scan voor requirements
@@ -120,12 +148,11 @@ async def sync_vacancies(data: VacancySync):
 
                 conn = sqlite3.connect(DB_PATH)
                 cursor = conn.cursor()
-                # Voorkom dubbele urls
                 cursor.execute('SELECT id FROM vacancies WHERE url = ?', (full_url,))
                 if not cursor.fetchone():
                     cursor.execute('''INSERT INTO vacancies (title, company, requirements, status, url) 
                                      VALUES (?, ?, ?, ?, ?)''', 
-                                  (clean_title, "Gedestilleerd Bedrijf", reqs, "Open", full_url))
+                                  (clean_title, "Gedetecteerd Bedrijf", reqs, "Open", full_url))
                     found_count += 1
                 conn.commit()
                 conn.close()
@@ -136,7 +163,6 @@ async def sync_vacancies(data: VacancySync):
 
 @app.get("/api/vacancies")
 async def get_vacancies():
-    """Haalt vacatures op inclusief de gerankte matches per vacature"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -146,7 +172,6 @@ async def get_vacancies():
     conn.close()
 
     talent_pool = await get_talent_pool()
-    
     for vac in vacancies:
         scored_talents = []
         for t in talent_pool:
@@ -155,11 +180,22 @@ async def get_vacancies():
                 t_copy = t.copy()
                 t_copy['match_score'] = score
                 scored_talents.append(t_copy)
-        
-        # Sorteer matches: Hoogste score bovenaan
         vac['matches'] = sorted(scored_talents, key=lambda x: x['match_score'], reverse=True)
     
     return vacancies
+
+@app.delete("/api/vacancies/{vacancy_id}")
+async def delete_vacancy(vacancy_id: int):
+    """Verwijder een vacature (Vuilbak functie)."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM vacancies WHERE id = ?', (vacancy_id,))
+        conn.commit()
+        conn.close()
+        return {"success": True, "message": "Verwijderd"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
