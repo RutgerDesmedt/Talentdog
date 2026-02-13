@@ -4,17 +4,19 @@ from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
 import os
 import requests
-from datetime import datetime, timedelta
+import re
+import urllib.parse
+from bs4 import BeautifulSoup
+from datetime import datetime
 import uvicorn
 
-# Pydantic models
+# --- CONFIGURATIE & MODELLEN ---
 class VacancySync(BaseModel):
     url: str
-    title: str = "Vacancy from URL Sync"
+    title: str = "Nieuwe URL Sync"
 
-app = FastAPI(title="TalentDog Intelligence v2.2")
+app = FastAPI(title="TalentDog Intelligence v2.5")
 
-# CORS toestaan voor je frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,37 +24,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Database paden instellen voor de Docker container
 DB_DIR = os.path.join(os.getcwd(), "database")
 DB_PATH = os.path.join(DB_DIR, "talentdog.db")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 
-# --- Smart Scheduler Config ---
-SIGNAL_CONFIG = {
-    "layoffs": {"interval_days": 1, "q": '"{company}" (ontslaggolf OR layoffs OR reorganisatie)', "tbs": "qdr:d"},
-    "ma_activity": {"interval_days": 14, "q": '"{company}" (overgenomen OR acquisitie OR merger)', "tbs": "qdr:m"},
-    "tenure": {"interval_days": 30, "q": 'site:linkedin.com/in/ "{company}" "3 years" OR "3 jaar"', "tbs": ""},
-    "leadership": {"interval_days": 7, "q": '"{company}" ("nieuwe" OR "welkom") (CEO OR VP OR Director)', "tbs": "qdr:m"},
-    "sentiment": {"interval_days": 14, "q": 'site:glassdoor.nl "{company}" ("niet aanbevolen" OR "toxic")', "tbs": "qdr:m3"}
-}
-
+# --- DATABASE INITIALISATIE ---
 def init_database():
     if not os.path.exists(DB_DIR):
         os.makedirs(DB_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('CREATE TABLE IF NOT EXISTS cached_signals (company TEXT, type TEXT, data TEXT, timestamp TIMESTAMP)')
-    cursor.execute('CREATE TABLE IF NOT EXISTS signal_scheduler (company TEXT, type TEXT, next_check TIMESTAMP, PRIMARY KEY(company, type))')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS vacancies 
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                      title TEXT, 
-                      company TEXT,
-                      location TEXT, 
-                      department TEXT,
-                      type TEXT,
-                      status TEXT,
-                      url TEXT,
-                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    cursor.execute('CREATE TABLE IF NOT EXISTS vacancies (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, company TEXT, location TEXT, requirements TEXT, status TEXT, url TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
     conn.commit()
     conn.close()
 
@@ -60,143 +42,125 @@ def init_database():
 async def startup_event():
     init_database()
 
-# CRUCIAAL: Root endpoint voor de Railway Healthcheck
+# --- HELPER FUNCTIES VOOR SCHONERE DATA ---
+def clean_job_title(title):
+    """Maakt de titels schoon (bijv. verwijdert 'Bekijk vacature')"""
+    noise = [r'bekijk vacature', r'solliciteer direct', r'view job', r'lees meer', r'details', r'apply now']
+    clean_title = title
+    for word in noise:
+        clean_title = re.sub(word, '', clean_title, flags=re.IGNORECASE)
+    clean_title = re.sub(r'^[ \t\n\r\f\v\W]+|[ \t\n\r\f\v\W]+$', '', clean_title)
+    return " ".join(clean_title.split())
+
+def extract_requirements(html_content):
+    """Scant de tekst op keywords voor matching"""
+    soup = BeautifulSoup(html_content, 'html.parser')
+    text = soup.get_text(" ", strip=True).lower()
+    skill_library = ['python', 'react', 'javascript', 'aws', 'azure', 'php', 'java', 'management', 'sales', 'hbo', 'wo', 'nederlands', 'engels']
+    found = [skill for skill in skill_library if re.search(rf'\b{skill}\b', text)]
+    return ", ".join(found)
+
+def calculate_match_score(vacancy_title, vacancy_reqs, talent):
+    """Berekent hoe goed een talent past bij een vacature"""
+    score = 0
+    talent_data = (talent['role'] + " " + talent['background']).lower()
+    
+    # Match op titel (zwaar gewogen)
+    if vacancy_title.lower() in talent['role'].lower():
+        score += 50
+    
+    # Match op skills/requirements
+    req_list = vacancy_reqs.lower().split(", ")
+    for req in req_list:
+        if req and req in talent_data:
+            score += 20
+            
+    return score
+
+# --- API ENDPOINTS ---
+
 @app.get("/")
 async def root():
-    return {"status": "TalentDog Engine is Online", "port_active": os.environ.get("PORT", "8080")}
-
-@app.get("/api/vacancies")
-async def get_vacancies():
-    """Get all vacancies from database and mock data"""
-    mock_vacancies = [
-        {
-            "id": 1,
-            "title": "Senior Software Engineer",
-            "company": "ASML",
-            "location": "Eindhoven, NL",
-            "department": "Engineering",
-            "type": "Full-time",
-            "status": "Open"
-        },
-        {
-            "id": 2,
-            "title": "Product Manager",
-            "company": "Adyen",
-            "location": "Amsterdam, NL",
-            "department": "Product",
-            "type": "Full-time",
-            "status": "Open"
-        },
-        {
-            "id": 3,
-            "title": "Data Scientist",
-            "company": "Booking.com",
-            "location": "Amsterdam, NL",
-            "department": "Data & Analytics",
-            "type": "Full-time",
-            "status": "Open"
-        }
-    ]
-    
-    # Haal ook vacancies uit de database
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute('SELECT id, title, company, location, department, type, status, url FROM vacancies')
-        db_vacancies = cursor.fetchall()
-        conn.close()
-        
-        # Voeg database vacancies toe aan de lijst
-        for row in db_vacancies:
-            mock_vacancies.append({
-                "id": row[0],
-                "title": row[1],
-                "company": row[2] or "Your Company",
-                "location": row[3] or "Remote",
-                "department": row[4] or "General",
-                "type": row[5] or "Full-time",
-                "status": row[6] or "Open",
-                "url": row[7] if len(row) > 7 else None
-            })
-    except Exception as e:
-        print(f"Database error: {e}")
-        # Als database fout heeft, return alleen mock data
-        pass
-    
-    return mock_vacancies
+    return {"status": "TalentDog Engine Online", "port": os.environ.get("PORT", "8080")}
 
 @app.get("/api/talent-pool")
-async def get_talent_pool(limit: int = 100):
-    """Get talent pool with optional limit"""
-    # Mock talent pool data
-    first_names = ['Emma', 'Liam', 'Sophie', 'Noah', 'Lisa', 'Lucas', 'Anna', 'Max', 'Julia', 'Tom']
-    last_names = ['de Vries', 'Jansen', 'Bakker', 'Visser', 'Smit', 'Meijer', 'de Boer', 'Mulder']
-    roles = ['Senior DevOps Engineer', 'Product Lead', 'Data Scientist', 'Cloud Architect']
-    companies = ['ASML', 'Adyen', 'Picnic', 'Bunq', 'Booking.com', 'Philips', 'Shell']
-    cities = ['Amsterdam', 'Rotterdam', 'Utrecht', 'Eindhoven', 'Den Haag']
-    sectors = ['Technology', 'FinTech', 'E-commerce', 'Healthcare Tech']
-    signal_types = ['TENURE EXPIRY', 'CORPORATE SHOCKWAVE', 'LAYOFFS', 'M&A / FUNDING']
-    
-    profiles = []
-    for i in range(min(limit, 100)):
-        name = f"{first_names[i % len(first_names)]} {last_names[i % len(last_names)]}"
-        profiles.append({
-            "id": i + 1,
-            "rank": f"#{i + 1}",
-            "name": name,
-            "role": roles[i % len(roles)],
-            "currentCompany": companies[i % len(companies)],
-            "location": f"{cities[i % len(cities)]}, NL",
-            "sector": sectors[i % len(sectors)],
-            "points": 50 + (i % 50),
-            "photo": f"https://images.pexels.com/photos/{220453 + (i % 10)}/pexels-photo.jpeg?auto=compress&cs=tinysrgb&w=150&h=150&fit=crop",
-            "signalType": signal_types[i % len(signal_types)],
-            "signalDescription": f"{name} heeft belangrijke ontwikkelingen.",
-            "story": f"{name} is klaar voor een nieuwe uitdaging.",
-            "background": f"Ervaren {roles[i % len(roles)]}.",
-            "email": f"{name.lower().replace(' ', '.')}@example.com"
-        })
-    
-    return profiles
+async def get_talent_pool(limit: int = 20):
+    """Mock talent pool data (in een echte app komt dit uit je DB)"""
+    talents = [
+        {"id": 1, "name": "Emma de Vries", "role": "Senior Python Developer", "background": "Ervaren met AWS en Python", "signalType": "TENURE EXPIRY"},
+        {"id": 2, "name": "Lucas Bakker", "role": "Project Manager", "background": "HBO werk- en denkniveau, Agile ervaring", "signalType": "LAYOFFS"},
+        {"id": 3, "name": "Sophie Jansen", "role": "Frontend Developer", "background": "Expert in React en Javascript", "signalType": None}
+    ]
+    return talents[:limit]
 
 @app.post("/api/vacancies/sync")
 async def sync_vacancies(data: VacancySync):
-    """Sync vacancies from URL or ATS"""
+    """Bezoekt de URL, vindt vacatures en slaat ze op met requirements"""
     try:
-        # In een echte implementatie zou je hier de URL scrapen of ATS API aanroepen
-        # Voor nu maken we een mock vacancy aan
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(data.url, headers=headers, timeout=10)
+        soup = BeautifulSoup(res.text, 'html.parser')
         
-        # Voorbeeld: Een vacancy toevoegen gebaseerd op de URL
-        cursor.execute('''INSERT INTO vacancies (title, company, location, department, type, status, url)
-                         VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                      (data.title, "Your Company", "Remote", "General", "Full-time", "Open", data.url))
-        
-        conn.commit()
-        vacancy_id = cursor.lastrowid
-        conn.close()
-        
-        return {
-            "success": True,
-            "message": "Vacancies synchronized successfully",
-            "vacancy_id": vacancy_id,
-            "url": data.url
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to sync vacancies: {str(e)}")
+        found_count = 0
+        for link in soup.find_all('a', href=True):
+            href = link['href']
+            raw_text = link.get_text().strip()
+            
+            # Filter op links die op vacatures lijken
+            if len(raw_text) > 8 and any(k in href.lower() for k in ['job', 'vacature', 'vacancy', '/p/']):
+                full_url = urllib.parse.urljoin(data.url, href)
+                clean_title = clean_job_title(raw_text)
+                
+                # Deep scan voor requirements
+                try:
+                    detail_res = requests.get(full_url, headers=headers, timeout=5)
+                    reqs = extract_requirements(detail_res.text)
+                except:
+                    reqs = ""
 
-@app.get("/api/detect-signals/{company}")
-async def get_smart_signals(company: str):
-    if not SERPER_API_KEY: 
-        raise HTTPException(status_code=500, detail="Serper Key Missing")
+                conn = sqlite3.connect(DB_PATH)
+                cursor = conn.cursor()
+                # Voorkom dubbele urls
+                cursor.execute('SELECT id FROM vacancies WHERE url = ?', (full_url,))
+                if not cursor.fetchone():
+                    cursor.execute('''INSERT INTO vacancies (title, company, requirements, status, url) 
+                                     VALUES (?, ?, ?, ?, ?)''', 
+                                  (clean_title, "Gedestilleerd Bedrijf", reqs, "Open", full_url))
+                    found_count += 1
+                conn.commit()
+                conn.close()
+        
+        return {"success": True, "new_vacancies": found_count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/vacancies")
+async def get_vacancies():
+    """Haalt vacatures op inclusief de gerankte matches per vacature"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM vacancies ORDER BY created_at DESC')
+    rows = cursor.fetchall()
+    vacancies = [dict(r) for r in rows]
+    conn.close()
+
+    talent_pool = await get_talent_pool()
     
-    final_report = []
-    # (Rest van je logica blijft hetzelfde...)
-    # [Hieronder de verkorte logica voor de leesbaarheid]
-    return {"company": company, "signals": "Data wordt opgehaald..."} # Vul aan met de rest van de eerdere logica
+    for vac in vacancies:
+        scored_talents = []
+        for t in talent_pool:
+            score = calculate_match_score(vac['title'], vac['requirements'] or "", t)
+            if score > 0:
+                t_copy = t.copy()
+                t_copy['match_score'] = score
+                scored_talents.append(t_copy)
+        
+        # Sorteer matches: Hoogste score bovenaan
+        vac['matches'] = sorted(scored_talents, key=lambda x: x['match_score'], reverse=True)
+    
+    return vacancies
 
 if __name__ == "__main__":
-    # Railway gebruikt poort 8080 volgens je instellingen
     port = int(os.environ.get("PORT", 8080))
     uvicorn.run(app, host="0.0.0.0", port=port)
