@@ -1,22 +1,13 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+import requests
 import sqlite3
 import os
-import requests
-import re
-import urllib.parse
-from bs4 import BeautifulSoup
-from datetime import datetime
+import xml.etree.ElementTree as ET
 import uvicorn
 
-# --- 1. CONFIGURATIE & MODELLEN ---
-class VacancySync(BaseModel):
-    url: str
-    title: str = "Nieuwe URL Sync"
-
-# --- 2. APP INITIALISATIE ---
-app = FastAPI(title="TalentDog Intelligence v2.6")
+app = FastAPI(title="TalentDog Enterprise ATS Integrator")
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,63 +16,80 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DB_DIR = os.path.join(os.getcwd(), "database")
-DB_PATH = os.path.join(DB_DIR, "talentdog.db")
+DB_PATH = os.path.join(os.getcwd(), "database", "talentdog.db")
 
-# --- 3. DATABASE SETUP ---
-def init_database():
-    if not os.path.exists(DB_DIR):
-        os.makedirs(DB_DIR, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS vacancies 
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                      title TEXT, company TEXT, location TEXT, 
-                      requirements TEXT, status TEXT, url TEXT, 
-                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    conn.commit()
-    conn.close()
+class ATSConfig(BaseModel):
+    system: str  # greenhouse, lever, workday, jobtoolz, etc.
+    subdomain: str 
+    api_key: str = None
+    feed_url: str = None # Specifiek voor Workday/iCIMS XML feeds
 
-@app.on_event("startup")
-async def startup_event():
-    init_database()
+class ATSManager:
+    @staticmethod
+    def fetch_jobs(config: ATSConfig):
+        s = config.system.lower()
+        
+        # 1. JOBTOOLZ (Belgische focus)
+        if s == "jobtoolz":
+            url = f"https://api.jobtoolz.com/v1/public/jobs/{config.subdomain}"
+            res = requests.get(url).json()
+            # Jobtoolz mapping
+            return [{"title": j['title'], "url": j['url'], "id": j['id']} for j in res.get('data', [])]
 
-# --- 4. HULPFUNCTIES & FILTERS ---
-def is_genuine_job_title(title):
-    """Controleert of de tekst een echte functietitel is."""
-    title_clean = " ".join(title.lower().split())
-    job_markers = [
-        'engineer', 'developer', 'manager', 'consultant', 'advisor', 
-        'specialist', 'partner', 'ciso', 'lead', 'sales', 'account', 
-        'support', 'project', 'central', 'cloud', 'data', 'software', 'architect'
-    ]
-    blacklist = ['klik hier', 'solliciteer', 'spontaan', 'lees meer', 'cookies', 'privacy', 'onze vacatures']
+        # 2. GREENHOUSE
+        elif s == "greenhouse":
+            url = f"https://boards-api.greenhouse.io/v1/boards/{config.subdomain}/jobs"
+            res = requests.get(url).json()
+            return [{"title": j['title'], "url": j['absolute_url'], "id": j['id']} for j in res.get('jobs', [])]
 
-    if any(word in title_clean for word in blacklist):
-        return False
-    
-    has_marker = any(marker in title_clean for marker in job_markers)
-    is_correct_length = 5 < len(title_clean) < 100
-    return has_marker and is_correct_length
+        # 3. LEVER
+        elif s == "lever":
+            url = f"https://api.lever.co/v0/postings/{config.subdomain}"
+            res = requests.get(url).json()
+            return [{"title": j['text'], "url": j['hostedUrl'], "id": j['id']} for j in res]
 
-def clean_job_title(title):
-    noise = [r'bekijk vacature', r'solliciteer direct', r'view job', r'lees meer']
-    clean = title
-    for word in noise:
-        clean = re.sub(word, '', clean, flags=re.IGNORECASE)
-    return " ".join(clean.split()).strip()
+        # 4. WORKDAY / iCIMS (XML Parsing)
+        elif s in ["workday", "icims"]:
+            target_url = config.feed_url or f"https://{config.subdomain}.{s}.com/rss"
+            response = requests.get(target_url)
+            root = ET.fromstring(response.content)
+            jobs = []
+            # Zoek naar standaard RSS/XML items
+            for item in root.findall('.//item'):
+                jobs.append({
+                    "title": item.find('title').text,
+                    "url": item.find('link').text,
+                    "id": item.find('guid').text if item.find('guid') is not None else item.find('link').text
+                })
+            return jobs
 
-def extract_requirements(html_content):
-    soup = BeautifulSoup(html_content, 'html.parser')
-    text = soup.get_text(" ", strip=True).lower()
-    skills = ['python', 'react', 'javascript', 'aws', 'azure', 'php', 'java', 'management', 'sales', 'hbo', 'wo', 'nederlands', 'engels']
-    found = [s for s in skills if re.search(rf'\b{s}\b', text)]
-    return ", ".join(found)
+        # 5. SMARTRECRUITERS
+        elif s == "smartrecruiters":
+            url = f"https://api.smartrecruiters.com/v1/companies/{config.subdomain}/postings"
+            res = requests.get(url).json()
+            return [{"title": j['name'], "url": f"https://jobs.smartrecruiters.com/{config.subdomain}/{j['id']}", "id": j['id']} for j in res.get('content', [])]
 
-def calculate_match_score(vacancy_title, vacancy_reqs, talent):
-    score = 0
-    t_data = (talent['role'] + " " + talent['background']).lower()
-    if vacancy_title.lower() in talent['role'].lower():
-        score += 50
-    for req in vacancy_reqs.lower().split(", "):
-        if req.strip()
+        return []
+
+@app.post("/api/vacancies/sync-ats")
+async def sync_ats(config: ATSConfig):
+    try:
+        jobs = ATSManager.fetch_jobs(config)
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        new_count = 0
+
+        for job in jobs:
+            cursor.execute('SELECT id FROM vacancies WHERE url = ?', (job['url'],))
+            if not cursor.fetchone():
+                cursor.execute('INSERT INTO vacancies (title, company, status, url) VALUES (?, ?, ?, ?)', 
+                              (job['title'], config.subdomain, "Open", job['url']))
+                new_count += 1
+        
+        conn.commit()
+        conn.close()
+        return {"success": True, "total": len(jobs), "new": new_count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Behoud hier je bestaande GET /api/vacancies en DELETE /api/vacancies endpoints...
