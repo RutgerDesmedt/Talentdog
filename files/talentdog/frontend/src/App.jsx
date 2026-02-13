@@ -4,14 +4,16 @@ import {
   Sparkles, Edit2, Trash2, User, Heart, MoreHorizontal, ArrowLeft, Trophy, Bell,
   ChevronDown, TrendingUp, Users, AlertTriangle, ExternalLink, Globe, Linkedin,
   MapPin, Building2, Send, ChevronRight, Clock, Target, Filter, Search, Upload,
-  ScanEye // Nieuw icoon voor de scanner
+  ScanEye 
 } from 'lucide-react';
 
 // Importeer je nieuwe component
 import SignalIntelligence from './components/SignalIntelligence';
 
-// API Configuration
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+// ==================== API CONFIGURATION ====================
+// Hardcoded URL om build-issues met environment variables te omzeilen
+const API_BASE_URL = 'https://talentdogbackend.up.railway.app';
+// ===========================================================
 
 const TalentDogLogo = () => (
   <div className="flex items-center space-x-3 select-none">
@@ -36,6 +38,7 @@ const App = () => {
   const [vacancies, setVacancies] = useState([]);
   
   const profilesPerPage = 12;
+  const cities = ['Amsterdam', 'Rotterdam', 'Utrecht', 'Eindhoven', 'Den Haag'];
 
   const signalTypes = [
     'All Signals', 
@@ -57,6 +60,7 @@ const App = () => {
     setLoading(true);
     try {
       const response = await fetch(`${API_BASE_URL}/api/talent-pool?limit=100`);
+      if (!response.ok) throw new Error('Network response was not ok');
       const data = await response.json();
       setProfiles(data);
     } catch (error) {
@@ -70,6 +74,7 @@ const App = () => {
   const loadVacancies = async () => {
     try {
       const response = await fetch(`${API_BASE_URL}/api/vacancies`);
+      if (!response.ok) throw new Error('Network response was not ok');
       const data = await response.json();
       setVacancies(data);
     } catch (error) {
@@ -124,10 +129,10 @@ const App = () => {
     const sectors = ['Technology', 'FinTech', 'E-commerce', 'Healthcare Tech'];
     const signalTypes = ['TENURE EXPIRY', 'CORPORATE SHOCKWAVE', 'LAYOFFS', 'M&A / FUNDING'];
     
-    const profiles = [];
+    const mockProfiles = [];
     for (let i = 0; i < 100; i++) {
       const name = `${firstNames[i % firstNames.length]} ${lastNames[i % lastNames.length]}`;
-      profiles.push({
+      mockProfiles.push({
         id: i + 1,
         rank: `#${i + 1}`,
         name,
@@ -144,7 +149,7 @@ const App = () => {
         email: `${name.toLowerCase().replace(' ', '.')}@example.com`
       });
     }
-    return profiles;
+    return mockProfiles;
   };
 
   // ==================== FILTERING & PAGINATION ====================
@@ -158,7 +163,6 @@ const App = () => {
     return matchesSearch && matchesSignal;
   });
 
-  const totalPages = Math.ceil(filteredProfiles.length / profilesPerPage);
   const displayedProfiles = filteredProfiles.slice((currentPage - 1) * profilesPerPage, currentPage * profilesPerPage);
 
   const handleTalentClick = (talent) => {
@@ -175,10 +179,13 @@ const App = () => {
         <button onClick={() => setView('overview')} className="flex items-center space-x-2 text-gray-900 font-bold mb-8 hover:opacity-70 transition-opacity">
           <ArrowLeft size={20} /> <span className="text-lg">Back</span>
         </button>
-        {/* ... Rest van je bestaande detail view code ... */}
         <div className="bg-white border border-gray-100 rounded-[2rem] p-10 shadow-sm">
            <h1 className="text-4xl font-black text-gray-900">{selectedTalent.name}</h1>
            <p className="text-gray-500 mt-2">{selectedTalent.role} @ {selectedTalent.currentCompany}</p>
+           <div className="mt-8 p-6 bg-blue-50 rounded-2xl">
+             <h3 className="text-blue-600 font-bold text-sm uppercase mb-2">Signal Analysis</h3>
+             <p className="text-gray-700">{selectedTalent.signalDescription}</p>
+           </div>
         </div>
       </div>
     );
@@ -208,7 +215,7 @@ const App = () => {
       </div>
 
       <div className="grid grid-cols-2 gap-8 mb-12">
-        {displayedProfiles.map((candidate, idx) => (
+        {displayedProfiles.map((candidate) => (
           <div key={candidate.id} onClick={() => handleTalentClick(candidate)} className="group relative bg-white border border-gray-100 rounded-3xl p-8 transition-all hover:shadow-lg cursor-pointer">
             <div className="flex items-center space-x-4">
                <img src={candidate.photo} className="w-16 h-16 rounded-2xl grayscale group-hover:grayscale-0 transition-all" alt="" />
@@ -219,15 +226,13 @@ const App = () => {
             </div>
             <div className="mt-6 p-4 bg-gray-50 rounded-xl">
                <span className="text-[10px] font-black text-blue-600 uppercase">{candidate.signalType}</span>
-               <p className="text-sm text-gray-700 mt-1">{candidate.currentCompany}</p>
+               <p className="text-sm text-gray-700 mt-1">{candidate.signalDescription}</p>
             </div>
           </div>
         ))}
       </div>
     </div>
   );
-
-  // ==================== MAIN RENDER ====================
 
   return (
     <div className="flex h-screen w-full bg-[#FCFCFD] text-[#111827] font-sans overflow-hidden">
@@ -261,7 +266,6 @@ const App = () => {
             </nav>
           </div>
 
-          {/* NIEUWE SECTIE: Intelligence Scanner */}
           <div className="mb-8">
             <h3 className="text-xs font-medium text-gray-400 uppercase tracking-[0.15em] mb-4 px-3">Intelligence</h3>
             <nav className="space-y-1">
@@ -301,7 +305,11 @@ const App = () => {
 
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-7xl mx-auto p-12">
-          {/* LOGICA OM HET JUISTE SCHERM TE TONEN */}
+          {loading && (
+            <div className="fixed top-4 right-4 animate-spin">
+              <Zap size={24} className="text-blue-600" />
+            </div>
+          )}
           {view === 'talent-detail' ? renderTalentDetail() :
            activeTab === 'Scanner' ? <SignalIntelligence /> : 
            activeTab === 'My Talent Pool' ? renderTalentPool() :
