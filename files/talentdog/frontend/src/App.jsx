@@ -11,7 +11,7 @@ import {
 import SignalIntelligence from './components/SignalIntelligence';
 
 // ==================== API CONFIGURATION ====================
-// Hardcoded URL om build-issues met environment variables te omzeilen
+// Railway backend URL
 const API_BASE_URL = 'https://talentdogbackend.up.railway.app';
 // ===========================================================
 
