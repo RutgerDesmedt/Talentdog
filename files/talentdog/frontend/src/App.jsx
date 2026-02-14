@@ -123,7 +123,7 @@ const ATSConnectionModal = ({ provider, onClose, onConnect }) => {
       });
       onClose();
     } catch (error) {
-      alert('Connection failed: ' + error.message);
+      window.alert('Connection failed: ' + error.message);
     } finally {
       setLoading(false);
     }
@@ -320,7 +320,7 @@ const App = () => {
         throw new Error(error.detail || 'Failed to connect');
       }
 
-      alert(`Successfully connected to ${provider}!`);
+      window.alert(`Successfully connected to ${provider}!`);
       
       await handleSyncATS(provider, config);
       await loadATSStatus();
@@ -354,7 +354,7 @@ const App = () => {
   };
 
   const handleDisconnectATS = async (provider) => {
-    if (!confirm(`Verbreek verbinding met ${provider}?`)) return;
+    if (!window.confirm(`Verbreek verbinding met ${provider}?`)) return;
 
     setLoading(true);
     try {
@@ -364,11 +364,11 @@ const App = () => {
 
       if (!response.ok) throw new Error('Failed to disconnect');
 
-      alert(`Verbinding met ${provider} verbroken`);
+      window.alert(`Verbinding met ${provider} verbroken`);
       await loadATSStatus();
       
     } catch (error) {
-      alert('Fout: ' + error.message);
+      window.alert('Fout: ' + error.message);
     } finally {
       setLoading(false);
     }
@@ -384,11 +384,11 @@ const App = () => {
       if (!response.ok) throw new Error('Sync failed');
 
       const result = await response.json();
-      alert(`Gesynchroniseerd!\nNieuw: ${result.total_new}, Geüpdatet: ${result.total_updated}`);
+      window.alert(`Gesynchroniseerd!\nNieuw: ${result.total_new}, Geüpdatet: ${result.total_updated}`);
       await loadVacanciesFromAPI();
       
     } catch (error) {
-      alert('Sync mislukt: ' + error.message);
+      window.alert('Sync mislukt: ' + error.message);
     } finally {
       setLoading(false);
     }
